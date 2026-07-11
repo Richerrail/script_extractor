@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Script Extractor</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Fira Code',monospace,system-ui;background:#1a1a2e;color:#e0e0e0;padding:20px;min-height:100vh}
+h1{text-align:center;color:#00d4ff;margin-bottom:20px;font-size:1.4em}
+.upload-zone{border:2px dashed #00d4ff;border-radius:12px;padding:40px;text-align:center;cursor:pointer;transition:.3s;margin-bottom:20px}
+.upload-zone:hover,.upload-zone.dragover{background:#00d4ff15;border-color:#00ff88}
+.upload-zone input{display:none}
+.upload-zone p{font-size:1.1em;color:#888}
+.upload-zone span{color:#00d4ff;text-decoration:underline}
+textarea{width:100%;height:200px;background:#16213e;color:#e0e0e0;border:1px solid #333;border-radius:8px;padding:12px;font-family:inherit;font-size:.85em;resize:vertical;margin-bottom:15px}
+.btn{background:#00d4ff;color:#1a1a2e;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:700;font-size:.95em;transition:.2s}
+.btn:hover{background:#00ff88}
+.btn-row{display:flex;gap:10px;justify-content:center;margin-bottom:20px;flex-wrap:wrap}
+.results{display:flex;flex-direction:column;gap:16px}
+.script-card{background:#16213e;border:1px solid #333;border-radius:10px;overflow:hidden}
+.card-header{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;background:#0f3460;flex-wrap:wrap;gap:8px}
+.card-header .lang{color:#00ff88;font-weight:700;text-transform:uppercase;font-size:.85em}
+.card-header .status{font-size:.8em;padding:4px 10px;border-radius:6px}
+.status.ok{background:#00ff8830;color:#00ff88}
+.status.warn{background:#ffa50030;color:#ffa500}
+.status.err{background:#ff444430;color:#ff4444}
+.card-body{padding:14px 16px}
+.card-body pre{background:#0d1117;padding:12px;border-radius:6px;overflow-x:auto;font-size:.82em;line-height:1.5;white-space:pre;tab-size:4}
+.card-body .report{margin-top:10px;font-size:.8em;color:#aaa}
+.card-body .report div{padding:3px 0}
+.card-body .report .good{color:#00ff88}
+.card-body .report .bad{color:#ff4444}
+.card-body .report .info{color:#ffa500}
+.card-actions{padding:8px 16px;display:flex;gap:8px;border-top:1px solid #333}
+.card-actions .btn{font-size:.78em;padding:6px 14px}
+.stats{text-align:center;color:#888;font-size:.85em;margin-bottom:15px}
+</style>
+</head>
+<body>
+<h1>🔍 Script Extractor</h1>
+
+<div class="upload-zone" id="dropZone">
+  <p>Glisse un fichier .txt / .md ici ou <span>parcours</span></p>
+  <input type="file" id="fileInput" accept=".txt,.md,.markdown,.rst">
+</div>
+
+<div style="text-align:center;margin-bottom:10px;color:#666">— ou colle ton texte —</div>
+<textarea id="inputText" placeholder="Colle ton texte contenant des blocs de code ici..."></textarea>
+
+<div class="btn-row">
+  <button class="btn" onclick="extractScripts()">Extraire les scripts</button>
+</div>
+
+<div class="stats" id="stats"></div>
+<div class="results" id="results"></div>
+
+<script>
+const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('fileInput'),inputText=document.getElementById('inputText'),resultsEl=document.getElementById('results'),statsEl=document.getElementById('stats');
+
+dropZone.addEventListener('click',()=>fileInput.click());
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover')});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');readFile(e.dataTransfer.files[0])});
+fileInput.addEventListener('change',()=>{if(fileInput.files[0])readFile(fileInput.files[0])});
+
+function readFile(f){
+  const r=new FileReader();
+  r.onload=e=>{inputText.value=e.target.result};
+  r.readAsText(f);
+}
+
+// --- Lang detection ---
+const LANG_MAP={
+  bash:'bash',sh:'bash',shell:'bash',zsh:'bash',
+  python:'python',py:'python',python3:'python',
+  javascript:'javascript',js:'javascript',node:'javascript',
+  typescript:'typescript',ts:'typescript',
+  ruby:'ruby',rb:'ruby',
+  perl:'perl',pl:'perl',
+  php:'php',
+  lua:'lua',
+  powershell:'powershell',ps1:'powershell',
+  sql:'sql',
+  html:'html',xml:'xml',css:'css',json:'json',yaml:'yaml',yml:'yaml',toml:'toml',
+  c:'c',cpp:'cpp',java:'java',go:'go',rust:'rust',r:'r',
+  dockerfile:'dockerfile',makefile:'makefile',
+};
+const SCRIPT_TYPES=new Set(['bash','python','javascript','typescript','ruby','perl','php','lua','powershell']);
+
+function detectLang(tag){
+  if(!tag)return null;
+  const t=tag.toLowerCase().trim();
+  return LANG_MAP[t]||t;
+}
+
+// --- Extract fenced code blocks ---
+function extractBlocks(text){
+  const blocks=[];
+  const re=/```(\w*)\s*\n([\s\S]*?)```/g;
+  let m;
+  while((m=re.exec(text))!==null){
+    blocks.push({rawTag:m[1],code:m[2]});
+  }
+  // Also detect indented blocks (4-space) if no fenced blocks found
+  if(blocks.length===0){
+    const lines=text.split('\n');
+    let buf=[],inBlock=false;
+    for(const line of lines){
+      if(line.match(/^ {4}\S/)){
+        inBlock=true;
+        buf.push(line.replace(/^ {4}/,''));
+      } else if(inBlock && line.trim()===''){
+        buf.push('');
+      } else if(inBlock){
+        blocks.push({rawTag:'',code:buf.join('\n')});
+        buf=[];inBlock=false;
+      }
+    }
+    if(buf.length)blocks.push({rawTag:'',code:buf.join('\n')});
+  }
+  return blocks;
+}
+
+// --- Indentation fixer ---
+function fixIndentation(code,lang){
+  let lines=code.split('\n');
+  // Remove leading/trailing empty lines
+  while(lines.length&&lines[0].trim()==='')lines.shift();
+  while(lines.length&&lines[lines.length-1].trim()==='')lines.pop();
+
+  if(lang==='python'){
+    return fixPythonIndent(lines);
+  }
+  // Generic: find minimum indent of non-empty lines, dedent all
+  let minIndent=Infinity;
+  for(const l of lines){
+    if(l.trim()==='')continue;
+    const indent=l.match(/^(\s*)/)[1];
+    const tabs=indent.split('').filter(c=>c==='\t').length;
+    const spaces=indent.split('').filter(c=>c===' ').length;
+    minIndent=Math.min(minIndent,tabs*4+spaces);
+  }
+  if(minIndent===Infinity)minIndent=0;
+  const dedented=lines.map(l=>{
+    if(l.trim()==='')return '';
+    // remove minIndent spaces worth
+    let removed=0,charsToRemove=0;
+    for(let i=0;i<l.length&&removed<minIndent;i++){
+      if(l[i]==='\t')removed+=4; else removed++;
+      charsToRemove=i+1;
+    }
+    return l.slice(charsToRemove);
+  });
+  return {code:dedented.join('\n'),fixed:minIndent>0?`Dédenté de ${minIndent} espaces`:''};
+}
+
+function fixPythonIndent(lines){
+  // Normalize tabs to 4 spaces, ensure consistent indentation
+  let changed=false;
+  const normalized=lines.map(l=>{
+    if(l.trim()==='')return '';
+    const orig=l;
+    const newL=l.replace(/\t/g,'    ');
+    if(newL!==orig)changed=true;
+    return newL;
+  });
+  // Check indent levels are multiples of 4
+  const warnings=[];
+  normalized.forEach((l,i)=>{
+    if(l.trim()==='')return;
+    const indent=l.match(/^( *)/)[1].length;
+    if(indent%4!==0){
+      warnings.push(`Ligne ${i+1}: indentation de ${indent} espaces (pas multiple de 4)`);
+    }
+  });
+  return {code:normalized.join('\n'),fixed:changed?'Tabulations converties en espaces':'',warnings};
+}
+
+// --- Syntax checkers ---
+function checkJS(code){
+  try{
+    new Function(code);
+    return {ok:true,msg:'Syntaxe OK'};
+  }catch(e){
+    return {ok:false,msg:`Erreur syntaxe: ${e.message}`};
+  }
+}
+
+function checkJSON(code){
+  try{
+    JSON.parse(code);
+    return {ok:true,msg:'JSON valide'};
+  }catch(e){
+    return {ok:false,msg:`JSON invalide: ${e.message}`};
+  }
+}
+
+function checkPython(code){
+  const issues=[];
+  const lines=code.split('\n');
+  let prevIndent=0;
+  for(let i=0;i<lines.length;i++){
+    const l=lines[i];
+    if(l.trim()===''||l.trim().startsWith('#'))continue;
+    const indent=l.match(/^( *)/)[1].length;
+    // Check indent jumps
+    if(indent>prevIndent && indent-prevIndent>4){
+      issues.push(`Ligne ${i+1}: saut d'indentation suspect (+${indent-prevIndent})`);
+    }
+    prevIndent=indent;
+    // Missing colon after def/class/if/for/while/with
+    const trimmed=l.trim();
+    if(/^(def|class|if|elif|else|for|while|with|try|except|finally)\b/.test(trimmed)&&!trimmed.endsWith(':')&&!trimmed.endsWith(':\\')&&!trimmed.includes('#')){
+      issues.push(`Ligne ${i+1}: ":" manquant après mot-clé ?`);
+    }
+    // Unmatched parens
+    const opens=(l.match(/\(/g)||[]).length;
+    const closes=(l.match(/\)/g)||[]).length;
+    if(Math.abs(opens-closes)>3){
+      issues.push(`Ligne ${i+1}: parenthèses déséquilibrées (${opens} ouv. vs ${closes} ferm.)`);
+    }
+  }
+  if(issues.length===0)return{ok:true,msg:'Vérifications basiques OK — exécution requise pour validation complète'};
+  return{ok:false,msg:issues.join('\n')};
+}
+
+function checkBash(code){
+  const issues=[];
+  const lines=code.split('\n');
+  let openBlocks=0;
+  for(let i=0;i<lines.length;i++){
+    const l=lines[i].trim();
+    if(l===''||l.startsWith('#'))continue;
+    // Track if/fi, do/done, case/esac
+    if(/^(if|while|until|for)\b/.test(l))openBlocks++;
+    if(l==='fi'||l==='done'||l==='esac')openBlocks--;
+    if(/^case\b/.test(l))openBlocks++;
+    // Missing then after if
+    if(/^if\b/.test(l)){
+      const next=lines.slice(i+1).find(nl=>nl.trim()!=='');
+      if(next && !next.trim().startsWith('then') && !l.includes('; then') && !l.endsWith('then')){
+        issues.push(`Ligne ${i+1}: "then" manquant après "if"`);
+      }
+    }
+    // Unquoted variables
+    const unquoted=l.match(/\$\w+/g);
+    if(unquoted){
+      for(const v of unquoted){
+        const idx=l.indexOf(v);
+        if(idx>0 && l[idx-1]!=='"' && l[idx-1]!=="'" && !l.includes(`"${v}"`) && !l.includes(`'${v}'`)){
+          // soft warning, not error
+        }
+      }
+    }
+  }
+  if(openBlocks>0)issues.push(`${openBlocks} bloc(s) non fermé(s) (if/fi, do/done manquants)`);
+  if(openBlocks<0)issues.push(`Trop de fermetures (${Math.abs(openBlocks)} fi/done/esac en trop)`);
+
+  if(issues.length===0)return{ok:true,msg:'Structure OK — utiliser shellcheck pour validation complète'};
+  return{ok:false,msg:issues.join('\n')};
+}
+
+function checkCSS(code){
+  const opens=(code.match(/\{/g)||[]).length;
+  const closes=(code.match(/\}/g)||[]).length;
+  if(opens!==closes)return{ok:false,msg:`Accolades déséquilibrées: ${opens} "{" vs ${closes} "}"`};
+  return{ok:true,msg:'Accolades équilibrées'};
+}
+
+function checkHTML(code){
+  const selfClosing=new Set(['br','hr','img','input','meta','link','area','base','col','embed','source','track','wbr']);
+  const opens=(code.match(/<([a-zA-Z][a-zA-Z0-9]*)[\s>]/g)||[]).map(m=>m.match(/<(\w+)/)[1].toLowerCase()).filter(t=>!selfClosing.has(t));
+  const closes=(code.match(/<\/([a-zA-Z][a-zA-Z0-9]*)>/g)||[]).map(m=>m.match(/<\/(\w+)>/)[1].toLowerCase());
+  const diff=opens.length-closes.length;
+  if(Math.abs(diff)>5)return{ok:false,msg:`Balises potentiellement déséquilibrées: ~${opens.length} ouvrantes vs ~${closes.length} fermantes`};
+  return{ok:true,msg:'Balises apparemment équilibrées'};
+}
+
+function checkGeneric(code){
+  return{ok:null,msg:'Vérification automatique non disponible pour ce langage — vérification manuelle recommandée'};
+}
+
+function checkCode(code,lang){
+  switch(lang){
+    case 'javascript':return checkJS(code);
+    case 'json':return checkJSON(code);
+    case 'python':return checkPython(code);
+    case 'bash':return checkBash(code);
+    case 'css':return checkCSS(code);
+    case 'html':case 'xml':return checkHTML(code);
+    default:return checkGeneric(code);
+  }
+}
+
+// --- File extension map ---
+const EXT_MAP={bash:'.sh',sh:'.sh',python:'.py',javascript:'.js',typescript:'.ts',ruby:'.rb',perl:'.pl',php:'.php',lua:'.lua',powershell:'.ps1',sql:'.sql',html:'.html',xml:'.xml',css:'.css',json:'.json',yaml:'.yml',yml:'.yml',toml:'.toml',c:'.c',cpp:'.cpp',java:'.java',go:'.go',rust:'.rs',r:'.r',dockerfile:'Dockerfile',makefile:'Makefile'};
+
+function getExt(lang){return EXT_MAP[lang]||'.txt'}
+
+// --- Shebang check ---
+function hasShebang(code,lang){
+  const first=code.split('\n')[0].trim();
+  const shebangs={bash:'#',python:'#!/',javascript:'#!/usr/bin/env node',ruby:'#!/',perl:'#!/',php:'#!/'};
+  return first.startsWith('#!');
+}
+
+// --- Main extraction ---
+function extractScripts(){
+  const text=inputText.value.trim();
+  if(!text){statsEl.textContent='⚠️ Aucun texte fourni';resultsEl.innerHTML='';return}
+
+  const blocks=extractBlocks(text);
+  if(blocks.length===0){statsEl.textContent='⚠️ Aucun bloc de code détecté';resultsEl.innerHTML='';return}
+
+  let scriptCount=0,otherCount=0;
+  const cards=[];
+
+  blocks.forEach((block,idx)=>{
+    const lang=detectLang(block.rawTag);
+    const isScript=lang && SCRIPT_TYPES.has(lang);
+    if(isScript)scriptCount++;else otherCount++;
+
+    // Fix indentation
+    const indentResult=fixIndentation(block.code,lang||'');
+    const code=indentResult.code;
+
+    // Check syntax
+    const syntax=checkCode(code,lang||'');
+
+    // Shebang / executable check
+    let execNote='';
+    if(isScript && !hasShebang(code,lang)){
+      execNote='⚠️ Pas de shebang — ajouter #!/usr/bin/env <interpreteur> pour exécution directe';
+    }
+
+    // Build status
+    let statusClass,statusText;
+    if(syntax.ok===true){statusClass='ok';statusText='✓ OK'}
+    else if(syntax.ok===false){statusClass='err';statusText='✗ Problèmes'}
+    else{statusClass='warn';statusText='? Indéterminé'}
+
+    // Build report lines
+    const reportLines=[];
+    if(indentResult.fixed)reportLines.push({cls:'info',text:'🔧 Indentation: '+indentResult.fixed});
+    else reportLines.push({cls:'good',text:'✓ Indentation OK'});
+    if(indentResult.warnings)indentResult.warnings.forEach(w=>reportLines.push({cls:'info',text:'⚠️ '+w}));
+    if(syntax.ok===true)reportLines.push({cls:'good',text:'✓ '+syntax.msg});
+    else if(syntax.ok===false)syntax.msg.split('\n').forEach(m=>reportLines.push({cls:'bad',text:'✗ '+m}));
+    else reportLines.push({cls:'info',text:'💡 '+syntax.msg});
+    if(execNote)reportLines.push({cls:'info',text:execNote});
+
+    const ext=lang?getExt(lang):'.txt';
+    const fname=`script_${idx+1}${ext}`;
+
+    cards.push(`
+      <div class="script-card">
+        <div class="card-header">
+          <span class="lang">${lang||'inconnu'} ${isScript?'🔧':'📄'} — ${fname}</span>
+          <span class="status ${statusClass}">${statusText}</span>
+        </div>
+        <div class="card-body">
+          <pre>${escHtml(code)}</pre>
+          <div class="report">${reportLines.map(r=>`<div class="${r.cls}">${r.text}</div>`).join('')}</div>
+        </div>
+        <div class="card-actions">
+          <button class="btn" onclick="downloadScript(this)" data-name="${fname}" data-code="${escAttr(code)}">💾 Télécharger</button>
+          <button class="btn" onclick="copyCode(this)" data-code="${escAttr(code)}">📋 Copier</button>
+        </div>
+      </div>
+    `);
+  });
+
+  statsEl.textContent=`${blocks.length} bloc(s) détecté(s) — ${scriptCount} script(s) exécutable(s), ${otherCount} autre(s)`;
+  resultsEl.innerHTML=cards.join('');
+}
+
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function escAttr(s){return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+function downloadScript(btn){
+  const name=btn.dataset.name;
+  const code=btn.dataset.code.replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+  const blob=new Blob([code],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function copyCode(btn){
+  const code=btn.dataset.code.replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+  navigator.clipboard.writeText(code).then(()=>{
+    btn.textContent='✓ Copié !';
+    setTimeout(()=>btn.textContent='📋 Copier',1500);
+  });
+}
+</script>
+</body>
+</html>

@@ -42,7 +42,7 @@ textarea{width:100%;height:200px;background:#16213e;color:#e0e0e0;border:1px sol
 
 <div class="upload-zone" id="dropZone">
   <p>Glisse un fichier .txt / .md ici ou <span>parcours</span></p>
-  <input type="file" id="fileInput" accept=".txt,.md,.markdown,.rst">
+  <input type="file" id="fileInput" accept=".txt,.md,.markdown,.rst,.sh,.bash,.zsh,.py,.js,.ts,.rb,.pl,.php,.lua,.ps1,.sql,.html,.xml,.css,.json,.yaml,.yml,.toml,.c,.cpp,.java,.go,.rs,.r">
 </div>
 
 <div style="text-align:center;margin-bottom:10px;color:#666">— ou colle ton texte —</div>
@@ -57,6 +57,7 @@ textarea{width:100%;height:200px;background:#16213e;color:#e0e0e0;border:1px sol
 
 <script>
 const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('fileInput'),inputText=document.getElementById('inputText'),resultsEl=document.getElementById('results'),statsEl=document.getElementById('stats');
+let currentFileName=null;
 
 dropZone.addEventListener('click',()=>fileInput.click());
 dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover')});
@@ -64,10 +65,34 @@ dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'))
 dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');readFile(e.dataTransfer.files[0])});
 fileInput.addEventListener('change',()=>{if(fileInput.files[0])readFile(fileInput.files[0])});
 
+// Extensions de scripts/code → traités comme un seul bloc
+const EXT_TO_LANG={sh:'bash',bash:'bash',zsh:'bash',py:'python',js:'javascript',ts:'typescript',rb:'ruby',pl:'perl',php:'php',lua:'lua',ps1:'powershell',sql:'sql',html:'html',xml:'xml',css:'css',json:'json',yaml:'yaml',yml:'yaml',toml:'toml',c:'c',cpp:'cpp',java:'java',go:'go',rs:'rust',r:'r',dockerfile:'dockerfile',makefile:'makefile'};
+
 function readFile(f){
+  currentFileName=f.name;
   const r=new FileReader();
   r.onload=e=>{inputText.value=e.target.result};
   r.readAsText(f);
+}
+
+function isDirectScriptFile(filename){
+  if(!filename)return false;
+  const ext=filename.split('.').pop().toLowerCase();
+  // .md, .txt, .rst, .markdown → contient des blocs, pas un script direct
+  if(['md','txt','rst','markdown'].includes(ext))return false;
+  return EXT_TO_LANG.hasOwnProperty(ext);
+}
+
+function getLangFromFilename(filename){
+  if(!filename)return null;
+  const ext=filename.split('.').pop().toLowerCase();
+  return EXT_TO_LANG[ext]||null;
+}
+
+function getBaseName(filename){
+  if(!filename)return 'script';
+  const dot=filename.lastIndexOf('.');
+  return dot>0?filename.slice(0,dot):filename;
 }
 
 // --- Lang detection ---
@@ -310,11 +335,29 @@ function extractScripts(){
   const text=inputText.value.trim();
   if(!text){statsEl.textContent='⚠️ Aucun texte fourni';resultsEl.innerHTML='';return}
 
-  const blocks=extractBlocks(text);
-  if(blocks.length===0){statsEl.textContent='⚠️ Aucun bloc de code détecté';resultsEl.innerHTML='';return}
+  // --- Fichier script direct (.sh, .py, .js...) → un seul bloc ---
+  if(isDirectScriptFile(currentFileName)){
+    const lang=getLangFromFilename(currentFileName);
+    const blocks=[{rawTag:lang,code:text}];
+    buildResults(blocks,currentFileName);
+    return;
+  }
 
+  // --- Markdown/texte → chercher les blocs de code ---
+  const blocks=extractBlocks(text);
+  if(blocks.length===0){
+    // Fallback : aucun bloc trouvé, traiter tout le texte comme un script inconnu
+    const blocks2=[{rawTag:'',code:text}];
+    buildResults(blocks2,currentFileName);
+    return;
+  }
+  buildResults(blocks,currentFileName);
+}
+
+function buildResults(blocks,sourceFile){
   let scriptCount=0,otherCount=0;
   const cards=[];
+  const baseName=sourceFile?getBaseName(sourceFile):'script';
 
   blocks.forEach((block,idx)=>{
     const lang=detectLang(block.rawTag);
@@ -351,7 +394,7 @@ function extractScripts(){
     if(execNote)reportLines.push({cls:'info',text:execNote});
 
     const ext=lang?getExt(lang):'.txt';
-    const fname=`script_${idx+1}${ext}`;
+    const fname=blocks.length===1?baseName+ext:`${baseName}_${idx+1}${ext}`;
 
     cards.push(`
       <div class="script-card">

@@ -32,9 +32,24 @@ textarea{width:100%;height:200px;background:#16213e;color:#e0e0e0;border:1px sol
 .card-body .report .good{color:#00ff88}
 .card-body .report .bad{color:#ff4444}
 .card-body .report .info{color:#ffa500}
-.card-actions{padding:8px 16px;display:flex;gap:8px;border-top:1px solid #333}
+.card-actions{padding:8px 16px;display:flex;gap:8px;border-top:1px solid #333;flex-wrap:wrap}
 .card-actions .btn{font-size:.78em;padding:6px 14px}
+.btn-run{background:#00ff88;color:#1a1a2e}
+.btn-run:hover{background:#00d4ff}
 .stats{text-align:center;color:#888;font-size:.85em;margin-bottom:15px}
+.terminal{background:#000;border:2px solid #333;border-radius:10px;margin-top:20px;overflow:hidden}
+.terminal-bar{background:#1a1a2e;padding:6px 14px;display:flex;align-items:center;gap:8px;font-size:.8em;color:#888}
+.terminal-bar .dot{width:10px;height:10px;border-radius:50%}
+.terminal-bar .dot.r{background:#ff5f56}.terminal-bar .dot.y{background:#ffbd2e}.terminal-bar .dot.g{background:#27c93f}
+.terminal-bar span{margin-left:8px}
+.terminal-body{padding:12px;min-height:150px;max-height:400px;overflow-y:auto;font-size:.82em;line-height:1.6;color:#0f0;white-space:pre-wrap;word-break:break-all}
+.terminal-body .err{color:#ff4444}
+.terminal-body .info{color:#00d4ff}
+.terminal-body .warn{color:#ffa500}
+.terminal-body .ok{color:#00ff88}
+.terminal-body .prompt{color:#888}
+.terminal-iframe{width:100%;height:300px;border:none;background:#fff;display:none}
+.terminal-iframe.active{display:block}
 </style>
 </head>
 <body>
@@ -54,6 +69,16 @@ textarea{width:100%;height:200px;background:#16213e;color:#e0e0e0;border:1px sol
 
 <div class="stats" id="stats"></div>
 <div class="results" id="results"></div>
+
+<div class="terminal" id="terminal">
+  <div class="terminal-bar">
+    <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+    <span>Terminal</span>
+  </div>
+  <div class="terminal-body" id="termBody"><span class="prompt">$ En attente d'exécution...</span>
+</div>
+  <iframe class="terminal-iframe" id="termIframe" sandbox="allow-scripts allow-modals"></iframe>
+</div>
 
 <script>
 const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('fileInput'),inputText=document.getElementById('inputText'),resultsEl=document.getElementById('results'),statsEl=document.getElementById('stats');
@@ -407,6 +432,7 @@ function buildResults(blocks,sourceFile){
           <div class="report">${reportLines.map(r=>`<div class="${r.cls}">${r.text}</div>`).join('')}</div>
         </div>
         <div class="card-actions">
+          ${isScript||lang==='html'||lang==='css'?`<button class="btn btn-run" onclick="runScript(this)" data-lang="${lang||''}" data-name="${fname}" data-code="${escAttr(code)}">▶ Exécuter</button>`:''}
           <button class="btn" onclick="downloadScript(this)" data-name="${fname}" data-code="${escAttr(code)}">💾 Télécharger</button>
           <button class="btn" onclick="copyCode(this)" data-code="${escAttr(code)}">📋 Copier</button>
         </div>
@@ -438,6 +464,76 @@ function copyCode(btn){
     btn.textContent='✓ Copié !';
     setTimeout(()=>btn.textContent='📋 Copier',1500);
   });
+}
+
+// --- Terminal & Exécution ---
+const termBody=document.getElementById('termBody'),termIframe=document.getElementById('termIframe');
+
+function termClear(){termBody.innerHTML='';termIframe.classList.remove('active');termIframe.src='about:blank'}
+function termWrite(text,cls){const s=document.createElement('span');if(cls)s.className=cls;s.textContent=text+'\n';termBody.appendChild(s);termBody.scrollTop=termBody.scrollHeight}
+function termHtml(html){const d=document.createElement('div');d.innerHTML=html;termBody.appendChild(d);termBody.scrollTop=termBody.scrollHeight}
+
+function runScript(btn){
+  const lang=btn.dataset.lang;
+  const name=btn.dataset.name;
+  const code=btn.dataset.code.replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+  termClear();
+  termWrite(`▶ Exécution de ${name} (${lang})...`,'info');
+  termWrite('─'.repeat(50),'prompt');
+
+  if(lang==='javascript'){
+    runJS(code);
+  } else if(lang==='html'){
+    runHTML(code);
+  } else if(lang==='css'){
+    runCSS(code);
+  } else if(lang==='bash'||lang==='python'||lang==='ruby'||lang==='perl'||lang==='php'||lang==='lua'){
+    termWrite(`⚠️  ${lang} ne peut pas être exécuté dans le navigateur.`,'warn');
+    termWrite(`💡 Télécharge le script et exécute-le dans un terminal :`,'info');
+    termWrite(`   chmod +x ${name} && ./${name}`,'ok');
+  } else {
+    termWrite(`⚠️  Exécution non supportée pour : ${lang}`,'warn');
+  }
+}
+
+function runJS(code){
+  const logs=[];
+  const origLog=console.log,origErr=console.error,origWarn=console.warn;
+  console.log=(...a)=>{logs.push({t:'log',m:a.map(x=>typeof x==='object'?JSON.stringify(x,null,2):String(x)).join(' ')});origLog.apply(console,a)};
+  console.warn=(...a)=>{logs.push({t:'warn',m:a.map(x=>typeof x==='object'?JSON.stringify(x,null,2):String(x)).join(' ')});origWarn.apply(console,a)};
+  console.error=(...a)=>{logs.push({t:'err',m:a.map(x=>typeof x==='object'?JSON.stringify(x,null,2):String(x)).join(' ')});origErr.apply(console,a)};
+  try{
+    const result=new Function(code)();
+    logs.forEach(l=>termWrite(l.m,l.t==='err'?'err':l.t==='warn'?'warn':'ok'));
+    if(result!==undefined)termWrite(`→ ${typeof result==='object'?JSON.stringify(result,null,2):result}`,'ok');
+    termWrite('─'.repeat(50),'prompt');
+    termWrite('✓ Exécution terminée sans erreur','ok');
+  }catch(e){
+    logs.forEach(l=>termWrite(l.m,l.t==='err'?'err':l.t==='warn'?'warn':'ok'));
+    termWrite(`✗ ${e.message}`,'err');
+    termWrite('─'.repeat(50),'prompt');
+    termWrite('✗ Erreur lors de l\'exécution','err');
+  }
+  console.log=origLog;console.error=origErr;console.warn=origWarn;
+}
+
+function runHTML(code){
+  termBody.innerHTML='';
+  termWrite('Rendu HTML :','info');
+  termWrite('─'.repeat(50),'prompt');
+  const blob=new Blob([code],{type:'text/html'});
+  termIframe.src=URL.createObjectURL(blob);
+  termIframe.classList.add('active');
+}
+
+function runCSS(code){
+  termBody.innerHTML='';
+  termWrite('Preview CSS :','info');
+  termWrite('─'.repeat(50),'prompt');
+  const html=`<!DOCTYPE html><html><head><style>${code}</style></head><body><div class="container"><h1>Preview CSS</h1><p>Paragraphe d'exemple.</p><button>Bouton</button><ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul><div class="card"><h2>Card Title</h2><p>Card content</p></div></div></body></html>`;
+  const blob=new Blob([html],{type:'text/html'});
+  termIframe.src=URL.createObjectURL(blob);
+  termIframe.classList.add('active');
 }
 </script>
 </body>

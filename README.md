@@ -144,7 +144,7 @@ git clone https://github.com/Richerrail/script_extractor.git
 cd script_extractor
 ```
 
-Ouvrez le fichier `index.html` dans votre navigateur préféré et commencez à extraire des scripts !
+Ouvrez mon lien:🌐 https://richerrail.github.io/script_extractor/ 📜
 
 ## 🌐 Compatibilité
 
